@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-slate-50 text-slate-600 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+@layer utilities {
+  .bg-grid-slate {
+    background-image:
+      linear-gradient(to right, rgb(226 232 240 / 0.7) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(226 232 240 / 0.7) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+  .mask-fade-b {
+    -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+  }
+}

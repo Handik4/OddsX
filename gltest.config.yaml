@@ -1,0 +1,8 @@
+networks:
+  default: studionet
+
+  studionet:
+    url: "https://studio-next.genlayer.com/api"
+
+paths:
+  contracts: "contracts"
