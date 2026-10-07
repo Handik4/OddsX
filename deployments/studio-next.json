@@ -2,8 +2,8 @@
   "network": "studio-next",
   "chain_id": 61997,
   "rpc_url": "https://studio-next.genlayer.com/api",
-  "contract_address": "0x078F34c0A51AcEd50A60bC844B180AFc78396A0E",
-  "explorer_url": "https://explorer-studio-next.genlayer.com/address/0x078F34c0A51AcEd50A60bC844B180AFc78396A0E",
+  "contract_address": "0x4C9276556A8B36481ca7164C124A13EcbEe5338A",
+  "explorer_url": "https://explorer-studio-next.genlayer.com/address/0x4C9276556A8B36481ca7164C124A13EcbEe5338A",
   "source": "contracts/oddsx_market.py",
-  "deployer": "0x202188df2Fd2Cc8Cf514Fe8b104588189c51c10c"
+  "deployer": "0x1381f6D503573237F8AD6559B58F9d0E1Eccc82f"
 }

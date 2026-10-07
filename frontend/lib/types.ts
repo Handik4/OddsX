@@ -27,6 +27,7 @@ export interface Market {
   original_trace: string;
   overturned: boolean;
   refund_mode: boolean;
+  expired: boolean;
 }
 
 export interface Position {

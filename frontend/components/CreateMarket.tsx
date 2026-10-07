@@ -75,9 +75,10 @@ export function CreateMarket({ onClose, onCreated }: { onClose: () => void; onCr
           </label>
         </div>
         <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          Creating a market locks a <b>{stake === null ? "…" : formatGen(stake)} GEN</b> creator stake. It is refunded
-          when the market resolves YES or NO, and slashed to the treasury if it resolves INCONCLUSIVE (unreachable or
-          unusable sources). Source URLs must be public http(s) addresses.
+          Creating a market locks a <b>{stake === null ? "…" : formatGen(stake)} GEN</b> creator stake, held until the
+          market finalizes. It is refunded only if the market ends with a normal YES or NO verdict. It is slashed to the
+          treasury if the market is INCONCLUSIVE, if a challenge overturns the first verdict, or if the market times out
+          and has to be expired. Source URLs must be public http(s) addresses.
         </p>
         <div className="mt-6 flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>

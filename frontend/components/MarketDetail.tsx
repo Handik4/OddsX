@@ -166,7 +166,7 @@ export function MarketDetail({ id, onBack }: { id: number; onBack: () => void })
               }`}
             >
               {market.overturned
-                ? `The Layer 3 audit overturned the Layer 1 verdict (${market.original_verdict} → ${market.verdict}). The challenger was refunded and received a capped reward.`
+                ? `The Layer 3 audit overturned the Layer 1 verdict (${market.original_verdict} → ${market.verdict}). The challenger was refunded and received a profit from the fee pool, and the creator stake was slashed.`
                 : `The Layer 3 audit upheld the Layer 1 verdict (${market.verdict}). The challenger's bond was slashed (to accurate bettors, or to the treasury when there are none).`}
             </p>
           )}

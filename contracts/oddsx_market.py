@@ -7,14 +7,15 @@
 #          Validators agree when they reach the same verdict.
 # Layer 2  Bond challenge: for CHALLENGE_WINDOW seconds anyone may stake a
 #          dynamic bond (max(5 GEN, 5% of the market pool)) to contest Layer 1.
-# Layer 3  Schelling settlement: a deeper, adversarial trace is run that audits
-#          the Layer 1 reasoning (a single escalation call at hackathon scope).
-#          Overturned -> challenger is refunded and rewarded from the fee pool
-#          (capped at the bond). Upheld -> the bond is slashed into the pool
-#          paid to bettors on the accurate side.
+# Layer 3  Single-step escalation: one deeper, adversarial consensus round that
+#          audits the Layer 1 reasoning. Overturned -> the challenger gets the
+#          bond back plus min(fee pool, bond / 2) as profit. Upheld -> the bond
+#          is slashed into the pool paid to bettors on the accurate side.
 #
-# Safety rails: creators post a stake that is slashed to the treasury when their
-# market resolves INCONCLUSIVE; source URLs pass an SSRF filter; markets that
+# Safety rails: creators post a stake that is held until finalization. It is
+# slashed to the treasury when the market resolves INCONCLUSIVE, when a
+# challenge overturns the first verdict, or when the market has to be expired;
+# it is refunded only after a normal YES/NO finalization. Source URLs pass an SSRF filter; markets that
 # never resolve can be force-expired into a refund; any pool that has no
 # eligible recipient (and all integer-division dust) is routed to the treasury.
 
@@ -89,6 +90,7 @@ class Market:
     creator_stake: u256
     claimed_win_stake: u256
     paid_total: u256
+    expired: bool
 
 
 class OddsXMarket(gl.contract.Contract):
@@ -161,6 +163,7 @@ class OddsXMarket(gl.contract.Contract):
             "original_trace": m.original_trace,
             "overturned": m.overturned,
             "refund_mode": m.refund_mode,
+            "expired": m.expired,
         }
 
     @gl.public.view
@@ -246,6 +249,7 @@ class OddsXMarket(gl.contract.Contract):
             creator_stake=CREATOR_STAKE,
             claimed_win_stake=0,
             paid_total=0,
+            expired=False,
         )
         return market_id
 
@@ -316,6 +320,7 @@ class OddsXMarket(gl.contract.Contract):
             "No Layer 1 resolution was reached within the 7 day grace period. "
             "The market is forced to INCONCLUSIVE and stakes are refunded."
         )
+        m.expired = True
         m.status = STATUS_RESOLVED
         m.resolved_at = self._now()
         self.markets[market_id] = m
@@ -338,7 +343,7 @@ class OddsXMarket(gl.contract.Contract):
 
         # Layer 3: deeper adversarial trace that audits the Layer 1 reasoning.
         deep = _run_consensus_round(
-            "LAYER 3 (DEEP SCHELLING SETTLEMENT)",
+            "LAYER 3 (DEEP AUDIT)",
             m.title,
             m.description,
             list(json.loads(m.sources_json)),
@@ -356,11 +361,12 @@ class OddsXMarket(gl.contract.Contract):
 
         fee = int(m.fee_pool)
         if deep["verdict"] != m.verdict:
-            # Overturned: bond back plus a capped reward; the rest goes to the treasury.
+            # Overturned: bond back plus a profit of min(fee pool, bond / 2).
+            # The rest of the fee pool goes to the treasury.
             m.overturned = True
-            reward = min(fee // 2, bond)
-            self._credit(challenger.as_hex, bond + reward)
-            self._credit(self.treasury.as_hex, fee - reward)
+            profit = min(fee, bond // 2)
+            self._credit(challenger.as_hex, bond + profit)
+            self._credit(self.treasury.as_hex, fee - profit)
         else:
             # Upheld: the bond is slashed into the pool for accurate bettors.
             m.bonus_pool = int(m.bonus_pool) + bond
@@ -464,8 +470,11 @@ class OddsXMarket(gl.contract.Contract):
             # No winners to pay: the slashed bond must never stay locked.
             self._credit(self.treasury.as_hex, int(m.bonus_pool))
             m.bonus_pool = 0
-        # Creator stake: slashed on INCONCLUSIVE (bad sources), refunded otherwise.
-        if m.verdict == VERDICT_INCONCLUSIVE:
+        # Creator stake is held until now. It is slashed to the treasury when the
+        # market is INCONCLUSIVE, was overturned by a challenge (bad initial
+        # source), or had to be expired. Only a normal YES/NO finalization,
+        # unchallenged or with the challenge rejected, refunds it.
+        if m.verdict == VERDICT_INCONCLUSIVE or m.overturned or m.expired:
             self._credit(self.treasury.as_hex, int(m.creator_stake))
         else:
             self._credit(m.creator.as_hex, int(m.creator_stake))

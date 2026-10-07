@@ -3,7 +3,7 @@
 A subjective prediction market clearinghouse on GenLayer. Polymarket-style markets work when the answer is a number or a score. They break when the answer needs judgment: *did this ruling violate term X? did this DAO vote breach its charter?* A token-holder oracle settles those questions by who holds the most tokens. OddsX settles them with GenLayer validators that read the sources, reason, and publish their reasoning on-chain.
 
 - Contract: `contracts/oddsx_market.py` (GenVM, `genvm-lint check` clean)
-- Tests: `tests/test_oddsx.py` (direct mode, 60 tests including validator replays)
+- Tests: `tests/test_oddsx.py` (direct mode, 74 tests including validator replays and exact accounting)
 - Deploy + seed: `scripts/deploy.py`
 - Dashboard: `frontend/` (Next.js + Tailwind, light mode only, live against Studio Next, chain 61997)
 
@@ -33,11 +33,11 @@ Nobody holds a special vote. The outcome is whatever independent validators, eac
 |---|---|---|---|
 | 1. Fast resolution | Anyone | Gas only | Multi-validator consensus on verdict + trace |
 | 2. Bond challenge | Anyone, within 24h | Dynamic bond (below), exact | Challenger stakes a bond to contest Layer 1 |
-| 3. Schelling settlement | Validators | Paid by the challenger's bond at risk | A deeper adversarial trace audits the Layer 1 reasoning |
+| 3. Single-step escalation | Validators | Paid by the challenger's bond at risk | A deeper adversarial trace audits the Layer 1 reasoning |
 
 Layer 3 re-reads the sources and receives the Layer 1 trace and the challenger's argument, all fenced as untrusted. It is told to re-derive the verdict independently and to depart from Layer 1 only when the sources support it. The Layer 3 result is final.
 
-**Layer 3 is currently a single-call escalation.** It is one additional consensus round, not a multi-round appeal tree, which keeps the hackathon scope focused. A production version would add further rounds with growing bonds and validator sets.
+**Layer 3 is a single-step escalation.** It is one additional consensus round, not a multi-round appeal tree, which keeps the hackathon scope focused. Its result is final. A production version would add further rounds with growing bonds and validator sets.
 
 ### Dynamic challenge bond
 
@@ -45,15 +45,25 @@ The bond is `max(5 GEN, 5% of the market pool)`, where the pool is the YES pool 
 
 ### Payoffs
 
-- **Overturned** (Layer 3 verdict differs from Layer 1): the challenger gets the bond back plus `min(fee_pool / 2, bond)`. The rest of the fee pool goes to the treasury. Bettors on the corrected side collect the net pool.
-- **Upheld** (same verdict): the bond is slashed and added to the pool paid to bettors on the accurate side. The fee pool goes to the treasury.
+- **Overturned** (Layer 3 verdict differs from Layer 1): the challenger gets the bond back plus a profit of `min(fee_pool, bond // 2)`. The remainder of the fee pool, if any, goes to the treasury. Bettors on the corrected side collect the net pool. The creator stake is slashed.
+- **Upheld** (same verdict): the bond is slashed and added to the pool paid to bettors on the accurate side. The fee pool goes to the treasury. The creator stake is refunded if the verdict is YES or NO.
 - **Unchallenged:** the fee pool goes to the treasury.
 
-A wrong Layer 1 verdict is still worth challenging, a frivolous challenge loses money, and the reward cannot be inflated by picking a market with a big fee pool.
+In practice the fee pool is the binding term in the profit formula. The fee pool is about 2% of the net pool, while half the bond is at least 2.5% of it, so an overturn pays out the whole fee pool. A challenge is still a risk: the break-even chance of overturning is roughly 70%, because the profit is about 40% of the bond. Challengers who also hold a bet on the corrected side earn more, since they share the net pool. Total deposits (creator stake, bets, bond) always equal total payouts to the wei, which the test suite checks across nine settlement scenarios.
 
 ### Creator stake
 
-`create_market` requires exactly 5 GEN. When the market finalizes, the stake is refunded to the creator if the verdict is YES or NO. If the verdict is `INCONCLUSIVE` (unreachable, contradictory or unusable sources, or a market that had to be expired), the stake is slashed to the treasury. This makes it costly to create markets with sources the creator controls, with unresolvable questions, or with sources that are dead by the resolution date.
+`create_market` requires exactly 5 GEN. The stake is **held until finalization** and then either refunded or slashed in full to the treasury.
+
+Slashed when:
+
+1. the market resolves `INCONCLUSIVE` (unreachable, contradictory or unusable sources);
+2. a challenge **overturns** the first verdict (the creator's sources led validators to a wrong result);
+3. the market **times out** and `refund_expired` is called. This holds even if a later challenge rescues the expired market into a YES or NO verdict. The stake is slashed once, never twice.
+
+Refunded only when the market finalizes normally with a YES or NO verdict, either unchallenged or with the challenge rejected.
+
+This makes it costly to use definitive but biased sources the creator controls, and it removes the free exit of deliberately breaking a URL to force a cancellation.
 
 ### Treasury routing
 
@@ -61,7 +71,7 @@ The treasury is the deployer address. Anything that has no eligible recipient go
 
 - the slashed challenge bond (`bonus_pool`) when the market ends in refund mode (INCONCLUSIVE verdict, or nobody backed the winning side);
 - the unpaid share of the fee pool after a challenge reward;
-- the creator stake of an `INCONCLUSIVE` market;
+- the creator stake of a market that is `INCONCLUSIVE`, overturned or expired;
 - integer-division dust. Winner payouts round down. When the last winning stake has been claimed, the difference between the pool and what was paid out is credited to the treasury. Winners who never claim keep their share unclaimed.
 
 The treasury withdraws with `withdraw`, like any other balance.
@@ -72,7 +82,8 @@ If `resolve_market` cannot succeed (dead URLs, no consensus), the market would s
 
 ### SSRF protection
 
-`create_market` rejects any source URL that is not a plain `http` or `https` URL with a public host. Rejected: other schemes (`file`, `ftp`, `gopher`, `javascript`), embedded credentials, backslashes and whitespace, IPv6 literals, `localhost` and `.localhost`, `.local`, `.internal` and cloud metadata hostnames, DNS-rebinding resolvers such as `nip.io`, and IPv4 in any encoding (dotted, decimal, hex, octal, short form) when it falls in `0.0.0.0/8`, `127.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` (including `169.254.169.254`), or multicast and reserved space. The same check runs again before every fetch. URLs are limited to 200 characters, titles to 200, descriptions to 1000, and challenge arguments to 1000. A hostname that is public by name but resolves to a private address cannot be detected without DNS and is a known limit.
+`create_market` rejects any source URL that is not a plain `http` or `https` URL with a public host. Rejected: other schemes (`file`, `ftp`, `gopher`, `javascript`), embedded credentials, backslashes and whitespace, IPv6 literals, `localhost` and `.localhost`, `.local`, `.internal` and cloud metadata hostnames, DNS-rebinding resolvers such as `nip.io`, and IPv4 in any encoding (dotted, decimal, hex, octal, short form) when it falls in `0.0.0.0/8`, `127.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` (including `169.254.169.254`), or multicast and reserved space. The same check runs again before every fetch. URLs are limited to 200 characters, titles to 200, descriptions to 1000, and challenge arguments to 1000. 
+**SSRF filtering is strictly name-based. It does not resolve DNS (e.g., `localtest.me`) or follow redirects to block internal IPs.**
 
 ## Contract surface
 
@@ -103,6 +114,8 @@ The dashboard connects an injected wallet (MetaMask) and switches it to Studio N
 
 ## Limits worth knowing
 
+- **SSRF filtering is strictly name-based.** It does not resolve DNS (e.g., `localtest.me`) or follow redirects to block internal IPs.
+- **Evidence snapshotting.** Source content is not snapshotted at the time of resolution. Layer 3 challenges re-fetch the live URL, which could theoretically be altered. Production deployment would require IPFS hashing of the payload.
 - Direct-mode tests run the leader inline. Validator acceptance and rejection are tested by replaying the captured validator against mocks (`direct_vm.run_validator`), but real multi-validator consensus is only exercised on a live network.
 - Validators are paid through GenLayer's fee system, not by this contract. "Accurate verifiers" in this contract means the bettors on the accurate side.
 - The demo markets use public pages as stand-ins, so their verdicts are illustrative.

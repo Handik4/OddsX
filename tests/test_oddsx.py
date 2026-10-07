@@ -409,12 +409,11 @@ def test_dynamic_challenge_bond_scales_with_pool(direct_vm, direct_deploy, direc
     assert c.get_market(big)["challenge_bond"] == c.get_challenge_bond(big)
 
 
-def test_challenger_reward_is_capped_and_cannot_drain_the_fee_pool(
+def test_challenger_profit_is_min_of_fee_pool_and_half_bond(
     direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
 ):
-    """Large market: the bond is 5% of the pool, so a cheap gamble for the whole
-    fee pool is gone. The reward is at most half the fee pool and never more
-    than the bond; the other half goes to the treasury."""
+    """Overturn pays the bond back plus min(fee_pool, bond // 2); the rest of the
+    fee pool goes to the treasury. Large market: bond 98 GEN, fee pool 40 GEN."""
     c = direct_deploy(CONTRACT)
     mid = make_market(c, direct_vm, direct_alice)
     bet(c, direct_vm, direct_alice, mid, "YES", 1000)
@@ -423,14 +422,28 @@ def test_challenger_reward_is_capped_and_cannot_drain_the_fee_pool(
     fee_pool = int(c.get_market(mid)["fee_pool"])  # 40 GEN
     llm(direct_vm, "LAYER 3", "NO", "Audit overturns the verdict.")
     out, bond = challenge(c, direct_vm, direct_charlie, mid)
-    assert out["overturned"] is True
-    reward = min(fee_pool // 2, bond)
-    assert reward == fee_pool // 2 == 20 * ATTO
+    assert out["overturned"] is True and bond == 98 * ATTO
+    profit = min(fee_pool, bond // 2)
+    assert profit == fee_pool == 40 * ATTO
     charlie = hex_of(c, direct_vm, direct_charlie)
-    assert int(c.claimable_of(charlie)) == bond + reward
-    assert treasury_balance(c, direct_vm) == fee_pool - reward
-    # Net profit of a successful challenge is bounded by half the fee pool.
-    assert int(c.claimable_of(charlie)) - bond <= fee_pool // 2
+    assert int(c.claimable_of(charlie)) == bond + profit
+    # Treasury: the remainder of the fee pool (zero here) plus the slashed creator stake.
+    assert treasury_balance(c, direct_vm) == (fee_pool - profit) + STAKE
+
+
+def test_challenger_profit_formula_in_a_small_market(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    c = direct_deploy(CONTRACT)
+    mid = make_market(c, direct_vm, direct_alice)
+    bet(c, direct_vm, direct_alice, mid, "YES", 3)
+    bet(c, direct_vm, direct_bob, mid, "NO", 3)
+    resolve(c, direct_vm, mid, direct_alice, "YES")
+    fee_pool = int(c.get_market(mid)["fee_pool"])
+    llm(direct_vm, "LAYER 3", "NO", "Audit overturns the verdict.")
+    _, bond = challenge(c, direct_vm, direct_charlie, mid)
+    assert bond == MIN_BOND
+    profit = min(fee_pool, bond // 2)
+    assert int(c.claimable_of(hex_of(c, direct_vm, direct_charlie))) == bond + profit
+    assert treasury_balance(c, direct_vm) == (fee_pool - profit) + STAKE
 
 
 def test_successful_challenge_overturns_and_rewards(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
@@ -447,11 +460,13 @@ def test_successful_challenge_overturns_and_rewards(direct_vm, direct_deploy, di
     assert "LAYER 3" in m["reasoning_trace"] and "LAYER 1" in m["original_trace"]
     assert m["fee_pool"] == "0"
 
-    # Challenger: bond back + min(fee_pool / 2, bond) = 2 GEN. The other 2 GEN go to the treasury.
+    # Challenger: bond back + min(fee_pool, bond // 2) = min(4, 4.9) = 4 GEN of profit.
     charlie = hex_of(c, direct_vm, direct_charlie)
-    assert c.claimable_of(charlie) == str(bond + 2 * ATTO)
-    assert c.withdraw() == str(bond + 2 * ATTO)
-    assert treasury_balance(c, direct_vm) == 2 * ATTO
+    assert c.claimable_of(charlie) == str(bond + 4 * ATTO)
+    assert c.withdraw() == str(bond + 4 * ATTO)
+    # The creator provided a source set that led to a wrong verdict: stake slashed to the treasury.
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == "0"
+    assert treasury_balance(c, direct_vm) == STAKE
 
     # Bettor on the corrected side collects the whole net pool.
     assert c.preview_payout(mid, hex_of(c, direct_vm, direct_bob)) == str(196 * ATTO)
@@ -479,6 +494,8 @@ def test_failed_challenge_slashes_bond_to_accurate_bettors(
     # The accurate bettor receives the net pool plus the slashed bond.
     assert c.preview_payout(mid, hex_of(c, direct_vm, direct_alice)) == str(196 * ATTO + bond)
     assert treasury_balance(c, direct_vm) == 4 * ATTO  # the whole fee pool
+    # The verdict survived the challenge, so the creator stake is refunded.
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == str(STAKE)
 
     # A settled market cannot be challenged a second time.
     direct_vm.sender = direct_charlie
@@ -591,7 +608,7 @@ def test_refund_expired_unsticks_a_market_that_cannot_resolve(direct_vm, direct_
     assert out["verdict"] == "INCONCLUSIVE"
     m = c.get_market(mid)
     assert m["status"] == "RESOLVED" and m["verdict"] == "INCONCLUSIVE"
-    assert "EXPIRED" in m["reasoning_trace"]
+    assert "EXPIRED" in m["reasoning_trace"] and m["expired"] is True
 
     with direct_vm.expect_revert("Market is not open"):
         c.refund_expired(mid)  # only works once
@@ -612,3 +629,206 @@ def test_refund_expired_is_rejected_for_resolved_markets(direct_vm, direct_deplo
     warp(direct_vm, 3600 + 8 * DAY)
     with direct_vm.expect_revert("Market is not open"):
         c.refund_expired(mid)
+
+
+# ---------------------------------------------------- creator stake rules
+def test_creator_stake_is_slashed_when_a_challenge_overturns_the_verdict(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    c = direct_deploy(CONTRACT)
+    mid = resolved_market(c, direct_vm, direct_alice, direct_bob, "YES")
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == "0"  # held until finalization
+    llm(direct_vm, "LAYER 3", "NO", "Overturned.")
+    challenge(c, direct_vm, direct_charlie, mid)
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == "0"
+    assert treasury_balance(c, direct_vm) == STAKE  # whole fee pool went to the challenger
+
+
+def test_creator_stake_is_refunded_when_a_challenge_is_rejected(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    c = direct_deploy(CONTRACT)
+    mid = resolved_market(c, direct_vm, direct_alice, direct_bob, "NO")
+    llm(direct_vm, "LAYER 3", "NO", "Upheld.")
+    challenge(c, direct_vm, direct_charlie, mid)
+    assert c.get_market(mid)["overturned"] is False
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == str(STAKE)
+
+
+def test_creator_stake_is_held_until_finalization(direct_vm, direct_deploy, direct_alice, direct_bob):
+    c = direct_deploy(CONTRACT)
+    mid = resolved_market(c, direct_vm, direct_alice, direct_bob, "YES")  # RESOLVED, in the challenge window
+    assert c.get_market(mid)["status"] == "RESOLVED"
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == "0"
+    assert treasury_balance(c, direct_vm) == 0
+
+
+def test_creator_stake_is_slashed_on_timeout_even_if_the_market_later_resolves_yes(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """A creator cannot cancel for free by breaking their URLs. Even when a
+    challenge then rescues the expired market into a YES verdict, the stake is
+    slashed exactly once."""
+    c = direct_deploy(CONTRACT)
+    mid = make_market(c, direct_vm, direct_alice)
+    bet(c, direct_vm, direct_alice, mid, "YES", 100)
+    bet(c, direct_vm, direct_bob, mid, "NO", 100)
+    warp(direct_vm, 3600 + 7 * DAY + 60)
+    direct_vm.sender = direct_bob
+    c.refund_expired(mid)
+    mock_sources(direct_vm)
+    llm(direct_vm, "LAYER 3", "YES", "Sources were readable after all.")
+    out, bond = challenge(c, direct_vm, direct_charlie, mid)
+    assert out["overturned"] is True and out["verdict"] == "YES"
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == "0"
+    assert treasury_balance(c, direct_vm) == STAKE  # slashed once; fee pool went to the challenger
+
+
+# ------------------------------------------------------ exact accounting
+def _addr(hex_str):
+    return bytes.fromhex(hex_str[2:])
+
+
+def settle_everyone(c, direct_vm, participants, mid):
+    """Every participant claims, then the treasury withdraws. Returns the total
+    paid out and asserts nothing is left claimable or unreachable."""
+    total_out = 0
+    for who in participants:
+        key = hex_of(c, direct_vm, who)
+        if int(c.preview_payout(mid, key)) > 0 or int(c.claimable_of(key)) > 0:
+            direct_vm.sender = who
+            total_out += int(c.claim_winnings(mid))
+    treasury = c.get_treasury()
+    amount = int(c.claimable_of(treasury))
+    if amount > 0:
+        direct_vm.sender = _addr(treasury)
+        total_out += int(c.withdraw())
+    for who in participants:
+        assert c.claimable_of(hex_of(c, direct_vm, who)) == "0"
+    assert c.claimable_of(treasury) == "0"
+    return total_out
+
+
+def finalize_after_window(c, direct_vm, caller, mid, base_seconds):
+    warp(direct_vm, base_seconds + DAY + 60)
+    direct_vm.sender = caller
+    c.finalize_market(mid)
+
+
+def scenario_unchallenged_yes(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, a, mid, "YES", 100)
+    bet(c, vm, b, mid, "NO", 60)
+    resolve(c, vm, mid, a, "YES")
+    finalize_after_window(c, vm, a, mid, 7200)
+    return mid, STAKE + 160 * ATTO
+
+
+def scenario_overturned(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, a, mid, "YES", 100)
+    bet(c, vm, b, mid, "NO", 100)
+    resolve(c, vm, mid, a, "YES")
+    llm(vm, "LAYER 3", "NO", "Overturned.")
+    _, bond = challenge(c, vm, ch, mid)
+    return mid, STAKE + 200 * ATTO + bond
+
+
+def scenario_upheld(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, a, mid, "YES", 100)
+    bet(c, vm, b, mid, "NO", 100)
+    resolve(c, vm, mid, a, "YES")
+    llm(vm, "LAYER 3", "YES", "Upheld.")
+    _, bond = challenge(c, vm, ch, mid)
+    return mid, STAKE + 200 * ATTO + bond
+
+
+def scenario_inconclusive(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, a, mid, "YES", 100)
+    bet(c, vm, b, mid, "NO", 100)
+    resolve(c, vm, mid, a, "INCONCLUSIVE")
+    finalize_after_window(c, vm, a, mid, 7200)
+    return mid, STAKE + 200 * ATTO
+
+
+def scenario_double_inconclusive(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, a, mid, "YES", 100)
+    bet(c, vm, b, mid, "NO", 100)
+    resolve(c, vm, mid, a, "INCONCLUSIVE")
+    llm(vm, "LAYER 3", "INCONCLUSIVE", "Still insufficient.")
+    _, bond = challenge(c, vm, ch, mid)
+    return mid, STAKE + 200 * ATTO + bond
+
+
+def scenario_empty_winning_side(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, a, mid, "YES", 100)
+    resolve(c, vm, mid, a, "NO")
+    llm(vm, "LAYER 3", "NO", "Upheld.")
+    _, bond = challenge(c, vm, ch, mid)
+    return mid, STAKE + 100 * ATTO + bond
+
+
+def scenario_expired(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, a, mid, "YES", 100)
+    bet(c, vm, b, mid, "NO", 100)
+    warp(vm, 3600 + 7 * DAY + 60)
+    vm.sender = b
+    c.refund_expired(mid)
+    finalize_after_window(c, vm, b, mid, 3600 + 7 * DAY + 60)
+    return mid, STAKE + 200 * ATTO
+
+
+def scenario_expired_then_overturned(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, a, mid, "YES", 100)
+    bet(c, vm, b, mid, "NO", 100)
+    warp(vm, 3600 + 7 * DAY + 60)
+    vm.sender = b
+    c.refund_expired(mid)
+    mock_sources(vm)
+    llm(vm, "LAYER 3", "YES", "Readable after all.")
+    _, bond = challenge(c, vm, ch, mid)
+    return mid, STAKE + 200 * ATTO + bond
+
+
+def scenario_odd_wei_dust(c, vm, a, b, ch):
+    mid = make_market(c, vm, a)
+    bet(c, vm, b, mid, "YES", wei=10**17 + 7)
+    bet(c, vm, ch, mid, "YES", wei=10**17 + 13)
+    bet(c, vm, a, mid, "NO", wei=10**17 + 1)
+    resolve(c, vm, mid, a, "YES")
+    finalize_after_window(c, vm, a, mid, 7200)
+    return mid, STAKE + (10**17 + 7) + (10**17 + 13) + (10**17 + 1)
+
+
+SCENARIOS = [
+    scenario_unchallenged_yes,
+    scenario_overturned,
+    scenario_upheld,
+    scenario_inconclusive,
+    scenario_double_inconclusive,
+    scenario_empty_winning_side,
+    scenario_expired,
+    scenario_expired_then_overturned,
+    scenario_odd_wei_dust,
+]
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda f: f.__name__)
+def test_total_deposits_exactly_equal_total_payouts(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie, scenario
+):
+    """Zero wei difference: everything deposited (creator stake, bets, challenge
+    bond) is paid out exactly once to participants and the treasury."""
+    c = direct_deploy(CONTRACT)
+    treasury = c.get_treasury()
+    participants = [direct_alice, direct_bob, direct_charlie]
+    assert all(hex_of(c, direct_vm, p).lower() != treasury.lower() for p in participants)
+    mid, deposits = scenario(c, direct_vm, direct_alice, direct_bob, direct_charlie)
+    assert c.get_market(mid)["status"] == "FINAL"
+    assert settle_everyone(c, direct_vm, participants, mid) == deposits
