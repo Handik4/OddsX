@@ -88,7 +88,7 @@ export function MarketDetail({ id, onBack }: { id: number; onBack: () => void })
         <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
           <Stat label="Total pool" value={`${formatGen(total)} GEN`} />
           <Stat label="Resolves" value={new Date(market.resolution_date * 1000).toLocaleString()} />
-          <Stat label="Creator" value={shortAddr(market.creator)} />
+          <Stat label="Creator" value={`${shortAddr(market.creator)} · ${formatGen(market.creator_stake)} GEN staked`} />
         </div>
         <div className="mt-5">
           <div className="mb-1 flex justify-between text-sm font-medium">
@@ -139,9 +139,20 @@ export function MarketDetail({ id, onBack }: { id: number; onBack: () => void })
           <SectionTitle hint="Betting is closed. Anyone can trigger Layer 1: validators fetch the sources and reach consensus on a verdict and reasoning trace.">
             Resolve this market
           </SectionTitle>
-          <Button busy={busy === "resolve"} onClick={() => run("resolve", "resolve_market", [id], BigInt(0), "Market resolved at Layer 1.")}>
-            <Gavel className="h-4 w-4" /> Run Layer 1 resolution
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button busy={busy === "resolve"} onClick={() => run("resolve", "resolve_market", [id], BigInt(0), "Market resolved at Layer 1.")}>
+              <Gavel className="h-4 w-4" /> Run Layer 1 resolution
+            </Button>
+            {now > market.expiry_deadline ? (
+              <Button variant="outline" busy={busy === "expire"} onClick={() => run("expire", "refund_expired", [id], BigInt(0), "Market expired. Stakes will be refunded.")}>
+                Expire &amp; refund
+              </Button>
+            ) : (
+              <span className="text-xs text-slate-500">
+                If resolution keeps failing, the market can be expired for refunds in {countdown(market.expiry_deadline - now)}.
+              </span>
+            )}
+          </div>
         </Card>
       )}
 
@@ -155,8 +166,8 @@ export function MarketDetail({ id, onBack }: { id: number; onBack: () => void })
               }`}
             >
               {market.overturned
-                ? `The Layer 3 audit overturned the Layer 1 verdict (${market.original_verdict} → ${market.verdict}). The challenger was refunded and rewarded.`
-                : `The Layer 3 audit upheld the Layer 1 verdict (${market.verdict}). The challenger's bond was slashed into the accurate-bettor pool.`}
+                ? `The Layer 3 audit overturned the Layer 1 verdict (${market.original_verdict} → ${market.verdict}). The challenger was refunded and received a capped reward.`
+                : `The Layer 3 audit upheld the Layer 1 verdict (${market.verdict}). The challenger's bond was slashed (to accurate bettors, or to the treasury when there are none).`}
             </p>
           )}
           <TraceViewer
@@ -181,11 +192,11 @@ export function MarketDetail({ id, onBack }: { id: number; onBack: () => void })
 
       {phase === "resolved" && (
         <ChallengeTerminal
-          bond={config.challenge_bond}
+          bond={market.challenge_bond}
           windowLeft={windowLeft}
           busy={busy}
           onChallenge={(reason) =>
-            run("challenge", "challenge_resolution", [id, reason], BigInt(config.challenge_bond), "Challenge settled at Layer 3.")
+            run("challenge", "challenge_resolution", [id, reason], BigInt(market.challenge_bond), "Challenge settled at Layer 3.")
           }
           onFinalize={() => run("finalize", "finalize_market", [id], BigInt(0), "Market finalized.")}
         />

@@ -23,6 +23,7 @@ CONTRACT_PATH = ROOT / "contracts" / "oddsx_market.py"
 RPC_URL = os.environ.get("GENLAYER_RPC_URL", "https://studio-next.genlayer.com/api")
 EXPLORER_URL = "https://explorer-studio-next.genlayer.com"
 FUNDING = 1000 * 10**18
+CREATOR_STAKE = 5 * 10**18  # create_market is payable and requires exactly this stake
 WAIT_RETRIES = 200
 WAIT_INTERVAL_MS = 3000
 
@@ -107,6 +108,7 @@ def main() -> None:
             function_name="create_market",
             account=account,
             args=[spec["title"], spec["description"], spec["sources"], resolution_date],
+            value=CREATOR_STAKE,
             fees=fees_for(client),
         )
         wait(client, tx)

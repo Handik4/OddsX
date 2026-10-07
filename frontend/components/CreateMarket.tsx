@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
-import { write } from "@/lib/chain";
+import { chain, formatGen, write } from "@/lib/chain";
 import { useApp } from "./Providers";
 import { Button, inputCls } from "./ui";
 
@@ -13,6 +13,11 @@ export function CreateMarket({ onClose, onCreated }: { onClose: () => void; onCr
   const [sources, setSources] = useState("");
   const [days, setDays] = useState("3");
   const [busy, setBusy] = useState(false);
+  const [stake, setStake] = useState<string | null>(null);
+
+  useEffect(() => {
+    chain.config().then((c) => setStake(c.creator_stake)).catch(() => setStake(null));
+  }, []);
 
   async function submit() {
     const urls = sources
@@ -24,9 +29,13 @@ export function CreateMarket({ onClose, onCreated }: { onClose: () => void; onCr
       notify("error", "Add a title, at least one source URL, and a positive number of days.");
       return;
     }
+    if (stake === null) {
+      notify("error", "Could not read the creator stake from the contract.");
+      return;
+    }
     setBusy(true);
     try {
-      await write(account, "create_market", [title, description, urls, when], BigInt(0), () =>
+      await write(account, "create_market", [title, description, urls, when], BigInt(stake), () =>
         notify("info", "Transaction submitted. Waiting for consensus…")
       );
       notify("success", "Market created.");
@@ -65,6 +74,11 @@ export function CreateMarket({ onClose, onCreated }: { onClose: () => void; onCr
             <input className={`${inputCls} mt-1 font-normal`} type="number" min="0.01" step="any" value={days} onChange={(e) => setDays(e.target.value)} />
           </label>
         </div>
+        <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          Creating a market locks a <b>{stake === null ? "…" : formatGen(stake)} GEN</b> creator stake. It is refunded
+          when the market resolves YES or NO, and slashed to the treasury if it resolves INCONCLUSIVE (unreachable or
+          unusable sources). Source URLs must be public http(s) addresses.
+        </p>
         <div className="mt-6 flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>
             Cancel
