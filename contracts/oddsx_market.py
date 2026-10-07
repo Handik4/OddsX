@@ -470,14 +470,19 @@ class OddsXMarket(gl.contract.Contract):
             # No winners to pay: the slashed bond must never stay locked.
             self._credit(self.treasury.as_hex, int(m.bonus_pool))
             m.bonus_pool = 0
-        # Creator stake is held until now. It is slashed to the treasury when the
-        # market is INCONCLUSIVE, was overturned by a challenge (bad initial
-        # source), or had to be expired. Only a normal YES/NO finalization,
-        # unchallenged or with the challenge rejected, refunds it.
-        if m.verdict == VERDICT_INCONCLUSIVE or m.overturned or m.expired:
-            self._credit(self.treasury.as_hex, int(m.creator_stake))
+        # Creator stake is held until now. It is slashed in full to the treasury
+        # when the market is INCONCLUSIVE or had to be expired. A challenge that
+        # overturns the verdict slashes half (a good-faith creator can still be
+        # misled by an LLM mistake) and refunds the other half. A normal YES/NO
+        # finalization refunds the whole stake.
+        stake = int(m.creator_stake)
+        if m.verdict == VERDICT_INCONCLUSIVE or m.expired:
+            self._credit(self.treasury.as_hex, stake)
+        elif m.overturned:
+            self._credit(self.treasury.as_hex, stake // 2)
+            self._credit(m.creator.as_hex, stake - stake // 2)
         else:
-            self._credit(m.creator.as_hex, int(m.creator_stake))
+            self._credit(m.creator.as_hex, stake)
         m.status = STATUS_FINAL
 
     def _payout_for(self, market_id: int, m: Market, address_hex: str) -> int:

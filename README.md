@@ -45,7 +45,7 @@ The bond is `max(5 GEN, 5% of the market pool)`, where the pool is the YES pool 
 
 ### Payoffs
 
-- **Overturned** (Layer 3 verdict differs from Layer 1): the challenger gets the bond back plus a profit of `min(fee_pool, bond // 2)`. The remainder of the fee pool, if any, goes to the treasury. Bettors on the corrected side collect the net pool. The creator stake is slashed.
+- **Overturned** (Layer 3 verdict differs from Layer 1): the challenger gets the bond back plus a profit of `min(fee_pool, bond // 2)`. The remainder of the fee pool, if any, goes to the treasury. Bettors on the corrected side collect the net pool. Half of the creator stake is slashed.
 - **Upheld** (same verdict): the bond is slashed and added to the pool paid to bettors on the accurate side. The fee pool goes to the treasury. The creator stake is refunded if the verdict is YES or NO.
 - **Unchallenged:** the fee pool goes to the treasury.
 
@@ -53,17 +53,18 @@ In practice the fee pool is the binding term in the profit formula. The fee pool
 
 ### Creator stake
 
-`create_market` requires exactly 5 GEN. The stake is **held until finalization** and then either refunded or slashed in full to the treasury.
+`create_market` requires exactly 5 GEN. The stake is **held until finalization** and then refunded, half-slashed or fully slashed to the treasury.
 
-Slashed when:
+Slashed in full when:
 
 1. the market resolves `INCONCLUSIVE` (unreachable, contradictory or unusable sources);
-2. a challenge **overturns** the first verdict (the creator's sources led validators to a wrong result);
-3. the market **times out** and `refund_expired` is called. This holds even if a later challenge rescues the expired market into a YES or NO verdict. The stake is slashed once, never twice.
+2. the market **times out** and `refund_expired` is called. This holds even if a later challenge rescues the expired market into a YES or NO verdict. The stake is slashed once, never twice.
 
-Refunded only when the market finalizes normally with a YES or NO verdict, either unchallenged or with the challenge rejected.
+Slashed by half (`creator_stake // 2` to the treasury, the rest refunded to the creator) when a challenge **overturns** the first verdict. A good-faith creator can be failed by a Layer 1 LLM mistake, so the penalty is softened.
 
-This makes it costly to use definitive but biased sources the creator controls, and it removes the free exit of deliberately breaking a URL to force a cancellation.
+Refunded in full when the market finalizes normally with a YES or NO verdict, either unchallenged or with the challenge rejected.
+
+Using definitive but biased sources the creator controls carries a financial risk (slashing) *if* a challenge successfully overturns it. It also removes the free exit of deliberately breaking a URL to force a cancellation.
 
 ### Treasury routing
 
@@ -71,7 +72,7 @@ The treasury is the deployer address. Anything that has no eligible recipient go
 
 - the slashed challenge bond (`bonus_pool`) when the market ends in refund mode (INCONCLUSIVE verdict, or nobody backed the winning side);
 - the unpaid share of the fee pool after a challenge reward;
-- the creator stake of a market that is `INCONCLUSIVE`, overturned or expired;
+- the creator stake of a market that is `INCONCLUSIVE` or expired, and half of it when the market is overturned;
 - integer-division dust. Winner payouts round down. When the last winning stake has been claimed, the difference between the pool and what was paid out is credited to the treasury. Winners who never claim keep their share unclaimed.
 
 The treasury withdraws with `withdraw`, like any other balance.
@@ -116,6 +117,7 @@ The dashboard connects an injected wallet (MetaMask) and switches it to Studio N
 
 - **SSRF filtering is strictly name-based.** It does not resolve DNS (e.g., `localtest.me`) or follow redirects to block internal IPs.
 - **Evidence snapshotting.** Source content is not snapshotted at the time of resolution. Layer 3 challenges re-fetch the live URL, which could theoretically be altered. Production deployment would require IPFS hashing of the payload.
+- **Source Whitelist (future work).** A Source Whitelist (e.g., trusted news domains or official protocol endpoints) is strictly required for a Mainnet production release, to prevent creators from using easily mutable personal servers as resolution sources.
 - Direct-mode tests run the leader inline. Validator acceptance and rejection are tested by replaying the captured validator against mocks (`direct_vm.run_validator`), but real multi-validator consensus is only exercised on a live network.
 - Validators are paid through GenLayer's fee system, not by this contract. "Accurate verifiers" in this contract means the bettors on the accurate side.
 - The demo markets use public pages as stand-ins, so their verdicts are illustrative.

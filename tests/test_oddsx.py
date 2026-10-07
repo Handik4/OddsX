@@ -428,7 +428,7 @@ def test_challenger_profit_is_min_of_fee_pool_and_half_bond(
     charlie = hex_of(c, direct_vm, direct_charlie)
     assert int(c.claimable_of(charlie)) == bond + profit
     # Treasury: the remainder of the fee pool (zero here) plus the slashed creator stake.
-    assert treasury_balance(c, direct_vm) == (fee_pool - profit) + STAKE
+    assert treasury_balance(c, direct_vm) == (fee_pool - profit) + STAKE // 2
 
 
 def test_challenger_profit_formula_in_a_small_market(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
@@ -443,7 +443,7 @@ def test_challenger_profit_formula_in_a_small_market(direct_vm, direct_deploy, d
     assert bond == MIN_BOND
     profit = min(fee_pool, bond // 2)
     assert int(c.claimable_of(hex_of(c, direct_vm, direct_charlie))) == bond + profit
-    assert treasury_balance(c, direct_vm) == (fee_pool - profit) + STAKE
+    assert treasury_balance(c, direct_vm) == (fee_pool - profit) + STAKE // 2
 
 
 def test_successful_challenge_overturns_and_rewards(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
@@ -464,9 +464,9 @@ def test_successful_challenge_overturns_and_rewards(direct_vm, direct_deploy, di
     charlie = hex_of(c, direct_vm, direct_charlie)
     assert c.claimable_of(charlie) == str(bond + 4 * ATTO)
     assert c.withdraw() == str(bond + 4 * ATTO)
-    # The creator provided a source set that led to a wrong verdict: stake slashed to the treasury.
-    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == "0"
-    assert treasury_balance(c, direct_vm) == STAKE
+    # The creator provided a source set that led to a wrong verdict: half the stake slashed to the treasury, half refunded.
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == str(STAKE - STAKE // 2)
+    assert treasury_balance(c, direct_vm) == STAKE // 2
 
     # Bettor on the corrected side collects the whole net pool.
     assert c.preview_payout(mid, hex_of(c, direct_vm, direct_bob)) == str(196 * ATTO)
@@ -632,7 +632,7 @@ def test_refund_expired_is_rejected_for_resolved_markets(direct_vm, direct_deplo
 
 
 # ---------------------------------------------------- creator stake rules
-def test_creator_stake_is_slashed_when_a_challenge_overturns_the_verdict(
+def test_creator_stake_is_half_slashed_when_a_challenge_overturns_the_verdict(
     direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
 ):
     c = direct_deploy(CONTRACT)
@@ -640,8 +640,10 @@ def test_creator_stake_is_slashed_when_a_challenge_overturns_the_verdict(
     assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == "0"  # held until finalization
     llm(direct_vm, "LAYER 3", "NO", "Overturned.")
     challenge(c, direct_vm, direct_charlie, mid)
-    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == "0"
-    assert treasury_balance(c, direct_vm) == STAKE  # whole fee pool went to the challenger
+    assert c.get_market(mid)["overturned"] is True
+    # Half the stake is slashed to the treasury, the other half goes back to the creator.
+    assert c.claimable_of(hex_of(c, direct_vm, direct_alice)) == str(STAKE // 2)
+    assert treasury_balance(c, direct_vm) == STAKE // 2  # whole fee pool went to the challenger
 
 
 def test_creator_stake_is_refunded_when_a_challenge_is_rejected(
