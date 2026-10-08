@@ -81,10 +81,14 @@ The treasury withdraws with `withdraw`, like any other balance.
 
 If `resolve_market` cannot succeed (dead URLs, no consensus), the market would stay `OPEN` and lock stakes. After `resolution_date + 7 days`, anyone can call `refund_expired(market_id)`. It moves an `OPEN` market to `RESOLVED` with an `INCONCLUSIVE` verdict. The normal challenge window and finalization follow, bettors get their net stakes back, and the creator stake is slashed.
 
-### SSRF protection
+### Immutable evidence (IPFS-only sources)
 
-`create_market` rejects any source URL that is not a plain `http` or `https` URL with a public host. Rejected: other schemes (`file`, `ftp`, `gopher`, `javascript`), embedded credentials, backslashes and whitespace, IPv6 literals, `localhost` and `.localhost`, `.local`, `.internal` and cloud metadata hostnames, DNS-rebinding resolvers such as `nip.io`, and IPv4 in any encoding (dotted, decimal, hex, octal, short form) when it falls in `0.0.0.0/8`, `127.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` (including `169.254.169.254`), or multicast and reserved space. The same check runs again before every fetch. URLs are limited to 200 characters, titles to 200, descriptions to 1000, and challenge arguments to 1000. 
-**SSRF filtering is strictly name-based. It does not resolve DNS (e.g., `localtest.me`) or follow redirects to block internal IPs.**
+OddsX solves the "mutable evidence" vulnerability by strictly enforcing IPFS (the InterPlanetary File System) for every resolution source. `create_market` accepts only:
+
+- `ipfs://<CID>[/path]`, where `<CID>` is a CIDv0 (`Qm...`, 46 characters) or CIDv1 (base32, `b...`), or
+- `https://<gateway>/ipfs/<CID>[/path]` on a built-in list of public gateways (`ipfs.io`, `dweb.link`, `cloudflare-ipfs.com`, `w3s.link`, `gateway.pinata.cloud`, `nftstorage.link`).
+
+Everything else reverts with `Unsafe or unsupported source URL`: plain `http`/`https` URLs, other schemes, embedded credentials, backslashes and whitespace, unknown gateways, and malformed CIDs. Because a CID is the hash of the content, the creator cannot change what a source says after the market is created. The evidence set is frozen across both resolution rounds, the Layer 1 resolution and the Layer 3 challenge re-fetch. The same check runs again before every fetch, and `ipfs://` sources are fetched through a public gateway. URLs are limited to 200 characters, titles to 200, descriptions to 1000, and challenge arguments to 1000.
 
 ## Contract surface
 
@@ -115,9 +119,7 @@ The dashboard connects an injected wallet (MetaMask) and switches it to Studio N
 
 ## Limits worth knowing
 
-- **SSRF filtering is strictly name-based.** It does not resolve DNS (e.g., `localtest.me`) or follow redirects to block internal IPs.
-- **Evidence snapshotting.** Source content is not snapshotted at the time of resolution. Layer 3 challenges re-fetch the live URL, which could theoretically be altered. Production deployment would require IPFS hashing of the payload.
-- **Source Whitelist (future work).** A Source Whitelist (e.g., trusted news domains or official protocol endpoints) is strictly required for a Mainnet production release, to prevent creators from using easily mutable personal servers as resolution sources.
+- **IPFS availability.** Content is immutable, but it must stay pinned and reachable through a gateway. An unpinned CID resolves as an unreachable source and the market can end INCONCLUSIVE. Creators should pin their evidence.
 - Direct-mode tests run the leader inline. Validator acceptance and rejection are tested by replaying the captured validator against mocks (`direct_vm.run_validator`), but real multi-validator consensus is only exercised on a live network.
 - Validators are paid through GenLayer's fee system, not by this contract. "Accurate verifiers" in this contract means the bettors on the accurate side.
 - The demo markets use public pages as stand-ins, so their verdicts are illustrative.

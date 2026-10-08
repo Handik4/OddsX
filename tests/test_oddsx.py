@@ -18,7 +18,10 @@ ATTO = 10**18
 STAKE = 5 * ATTO
 MIN_BOND = 5 * ATTO
 DAY = 24 * 60 * 60
-SOURCES = ["https://news.example/ruling", "https://court.example/opinion"]
+CID_A = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+CID_B = "QmT78zSuBmuS4z925WZfrqQ1qHaJ56DQaTfyMUF7F8ff5o"
+CID_V1 = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+SOURCES = [f"ipfs://{CID_A}", f"ipfs://{CID_B}/opinion.txt"]
 
 
 # ------------------------------------------------------------------ helpers
@@ -32,8 +35,8 @@ def llm(direct_vm, round_marker, verdict, trace="Sources agree on the outcome.")
 
 
 def mock_sources(direct_vm):
-    direct_vm.mock_web(r".*news\.example.*", {"status": 200, "body": "The court found the clause void."})
-    direct_vm.mock_web(r".*court\.example.*", {"status": 200, "body": "Opinion: clause 4 violates term X."})
+    direct_vm.mock_web(rf".*{CID_A}.*", {"status": 200, "body": "The court found the clause void."})
+    direct_vm.mock_web(rf".*{CID_B}.*", {"status": 200, "body": "Opinion: clause 4 violates term X."})
 
 
 def warp(direct_vm, seconds):
@@ -128,11 +131,11 @@ def test_market_creation_validation(direct_vm, direct_deploy, direct_alice):
     with direct_vm.expect_revert("Provide 1-5 resolution sources"):
         c.create_market("t", "d", [], future)
     with direct_vm.expect_revert("Provide 1-5 resolution sources"):
-        c.create_market("t", "d", ["https://a.example/x"] * 6, future)
+        c.create_market("t", "d", [f"ipfs://{CID_A}"] * 6, future)
     with direct_vm.expect_revert("Description exceeds"):
         c.create_market("t", "x" * 1001, SOURCES, future)
     with direct_vm.expect_revert("Source URL exceeds"):
-        c.create_market("t", "d", ["https://a.example/" + "p" * 200], future)
+        c.create_market("t", "d", [f"ipfs://{CID_A}/" + "p" * 200], future)
     with direct_vm.expect_revert("future"):
         c.create_market("t", "d", SOURCES, int(time.time()) - 10)
 
@@ -152,36 +155,32 @@ def test_creator_stake_must_be_exact(direct_vm, direct_deploy, direct_alice):
 
 # --------------------------------------------------------------------- SSRF
 SAFE_URLS = [
+    f"ipfs://{CID_A}",
+    f"ipfs://{CID_B}/opinion.txt",
+    f"ipfs://{CID_V1}",
+    f"https://ipfs.io/ipfs/{CID_A}",
+    f"https://dweb.link/ipfs/{CID_V1}/doc/ruling.json",
+]
+UNSAFE_URLS = [
     "https://news.example/ruling",
     "http://court.example/opinion?id=1",
     "https://en.wikipedia.org/wiki/Fair_use",
     "https://8.8.8.8/status",
-]
-UNSAFE_URLS = [
     "http://localhost/admin",
-    "http://localhost./admin",
-    "http://app.localhost/x",
     "http://127.0.0.1/",
-    "http://127.255.255.254/",
-    "http://10.0.0.5/x",
-    "http://172.16.5.5/x",
-    "http://192.168.1.1/x",
     "http://169.254.169.254/latest/meta-data",
-    "http://metadata.google.internal/computeMetadata/v1/",
-    "http://0.0.0.0/",
-    "http://2130706433/",  # decimal 127.0.0.1
-    "http://0x7f000001/",  # hex 127.0.0.1
-    "http://0177.0.0.1/",  # octal 127.0.0.1
-    "http://127.1/",  # short form
-    "http://[::1]/",
-    "http://10.0.0.1.nip.io/",
     "http://user:pass@example.com/",
-    "http://trusted.example\\@127.0.0.1/",
-    "http://printer.local/",
-    "http://intranet.internal/",
+    f"http://ipfs.io/ipfs/{CID_A}",  # plain http gateway
+    f"https://evil.example/ipfs/{CID_A}",  # untrusted gateway could serve mutable bytes
+    f"https://ipfs.io.evil.example/ipfs/{CID_A}",
+    f"https://user@ipfs.io/ipfs/{CID_A}",
+    "ipfs://notacid",
+    "ipfs://Qm123",
+    f"ipfs://{CID_A}\\x",
+    f"ipfs://{CID_A} ",
+    f"ipns://{CID_A}",
     "ftp://example.com/file",
     "file:///etc/passwd",
-    "gopher://example.com/",
     "javascript:alert(1)",
     "example.com/no-scheme",
     "",
@@ -206,7 +205,7 @@ def test_create_market_rejects_unsafe_source(direct_vm, direct_deploy, direct_al
     direct_vm.sender = direct_alice
     direct_vm.value = STAKE
     future = int(time.time()) + 3600
-    for bad in ("http://127.0.0.1:8545/", "http://169.254.169.254/latest", "http://10.1.2.3/x", "file:///etc/passwd"):
+    for bad in ("https://news.example/ruling", "http://court.example/opinion", "http://127.0.0.1:8545/", "file:///etc/passwd"):
         with direct_vm.expect_revert("Unsafe or unsupported source URL"):
             c.create_market("t", "d", [SOURCES[0], bad], future)
     direct_vm.value = 0
@@ -291,7 +290,7 @@ def test_unsafe_source_is_never_fetched_at_resolution(direct_vm, direct_deploy, 
 
     direct_deploy(CONTRACT)
     module = sys.modules["_contract_oddsx_market"]
-    got = module._fetch_source("http://169.254.169.254/latest/meta-data")
+    got = module._fetch_source("https://news.example/ruling")
     assert got["ok"] is False and got["note"] == "blocked"
 
 

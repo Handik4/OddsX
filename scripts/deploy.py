@@ -27,7 +27,7 @@ CREATOR_STAKE = 5 * 10**18  # create_market is payable and requires exactly this
 WAIT_RETRIES = 200
 WAIT_INTERVAL_MS = 3000
 
-# Sources are public pages that exist today; the "ruling" and "governance"
+# Sources are immutable IPFS documents (the contract rejects http(s) URLs); the "ruling" and "governance"
 # scenarios are fictional and phrased so validators weigh the sources subjectively.
 DEMO_MARKETS = [
     {
@@ -39,8 +39,7 @@ DEMO_MARKETS = [
             "sources do not state a finding."
         ),
         "sources": [
-            "https://en.wikipedia.org/wiki/Fair_use",
-            "https://www.law.cornell.edu/uscode/text/17/107",
+            "ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco",
         ],
         "days": 3,
     },
@@ -52,8 +51,7 @@ DEMO_MARKETS = [
             "procedural requirement was met. INCONCLUSIVE if the records are missing or contradictory."
         ),
         "sources": [
-            "https://en.wikipedia.org/wiki/Decentralized_autonomous_organization",
-            "https://en.wikipedia.org/wiki/Quorum",
+            "ipfs://QmQzCQn4puG4qu8PTVS9ar86tQn6kKFTg4x59kE9LWe26x",
         ],
         "days": 5,
     },

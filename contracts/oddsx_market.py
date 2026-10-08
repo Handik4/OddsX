@@ -15,14 +15,14 @@
 # Safety rails: creators post a stake that is held until finalization. It is
 # slashed to the treasury when the market resolves INCONCLUSIVE, when a
 # challenge overturns the first verdict, or when the market has to be expired;
-# it is refunded only after a normal YES/NO finalization. Source URLs pass an SSRF filter; markets that
+# it is refunded only after a normal YES/NO finalization. Source URLs must be immutable IPFS content (ipfs:// or a trusted gateway /ipfs/<CID> URL); markets that
 # never resolve can be force-expired into a refund; any pool that has no
 # eligible recipient (and all integer-division dust) is routed to the treasury.
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
 
 import genlayer as gl
 from genlayer import Address, u256
@@ -514,150 +514,42 @@ class OddsXMarket(gl.contract.Contract):
 
 
 # ---------------------------------------------------------------------------
-# SSRF guard for resolution sources (module level, deterministic).
+# Immutable evidence guard for resolution sources (module level, deterministic).
 # ---------------------------------------------------------------------------
-_BLOCKED_EXACT = (
-    "localhost",
-    "metadata.google.internal",
+# Content-addressed evidence: CIDv0 (Qm..., base58, 46 chars) or CIDv1 (base32, 'b' prefix).
+_CID = r"(?:Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,120})"
+_IPFS_URI = re.compile(r"^ipfs://(" + _CID + r")(/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$")
+_GATEWAY_URL = re.compile(
+    r"^https://([a-z0-9.-]+)/ipfs/(" + _CID + r")(/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$"
 )
-_BLOCKED_SUFFIXES = ("localhost", "local", "internal", "localdomain")
-# DNS-rebinding wildcard resolvers encode an arbitrary IP in the hostname.
-_REBIND_SUFFIXES = ("nip.io", "sslip.io", "xip.io")
-
-
-def _hostname(url: str) -> str:
-    try:
-        parts = urlsplit(url.strip())
-    except (ValueError, TypeError):
-        return ""
-    return (parts.hostname or "").lower()
-
-
-def _is_numeric_host(hostname: str) -> bool:
-    h = hostname.rstrip(".")
-    if h == "":
-        return False
-    if h.startswith("0x") and "." not in h:
-        return len(h) > 2 and all(c in "0123456789abcdef" for c in h[2:])
-    if h.isdigit():
-        return True
-    parts = h.split(".")
-    if len(parts) > 4:
-        return False
-    for p in parts:
-        if p == "":
-            return False
-        if p.startswith("0x"):
-            if not all(c in "0123456789abcdef" for c in p[2:]):
-                return False
-        elif not p.isdigit():
-            return False
-    return True
-
-
-def _int_from_ip(hostname: str):
-    """Normalize any numeric host encoding (hex, decimal, octal, short form)
-    to a 32-bit integer, or None when it cannot be parsed."""
-    h = hostname.rstrip(".")
-    try:
-        if h.startswith("0x") and "." not in h:
-            return int(h, 16) & 0xFFFFFFFF
-        if h.isdigit() and "." not in h:
-            return int(h) & 0xFFFFFFFF
-        parts = h.split(".")
-        if len(parts) > 4:
-            return None
-        vals = []
-        for p in parts:
-            if p.startswith("0x"):
-                if len(p) == 2:
-                    return None
-                vals.append(int(p, 16))
-            elif p.isdigit():
-                vals.append(int(p, 8) if (len(p) > 1 and p.startswith("0")) else int(p))
-            else:
-                return None
-        n = len(vals)
-        last_bits = (5 - n) * 8
-        if last_bits < 8 or last_bits > 32:
-            return None
-        total = 0
-        for v in vals[:-1]:
-            if v > 255:
-                return None
-            total = (total << 8) | v
-        if vals[-1] >= (1 << last_bits):
-            return None
-        return ((total << last_bits) | vals[-1]) & 0xFFFFFFFF
-    except (ValueError, OverflowError):
-        return None
-
-
-def _ip_is_blocked(ip: int) -> bool:
-    if ip >> 24 == 0:  # 0.0.0.0/8
-        return True
-    if ip >> 24 == 127:  # 127.0.0.0/8 loopback
-        return True
-    if ip >> 24 == 10:  # 10.0.0.0/8
-        return True
-    if (ip >> 22) == 0x191:  # 100.64.0.0/10 CGNAT
-        return True
-    if (ip >> 20) == 0xAC1:  # 172.16.0.0/12
-        return True
-    if (ip >> 16) == 0xC0A8:  # 192.168.0.0/16
-        return True
-    if (ip >> 16) == 0xA9FE:  # 169.254.0.0/16 link-local (cloud metadata)
-        return True
-    if ip >> 28 >= 0xE:  # 224.0.0.0/4 multicast and 240.0.0.0/4 reserved
-        return True
-    return False
-
-
-def _leading_ipv4_label(hostname: str) -> bool:
-    parts = hostname.split(".")
-    if len(parts) < 4:
-        return False
-    ip = 0
-    for p in parts[:4]:
-        if not (p.isdigit() and len(p) <= 3 and int(p) <= 255):
-            return False
-        ip = (ip << 8) | int(p)
-    return _ip_is_blocked(ip)
+# Only well-known IPFS gateways: an arbitrary host could serve mutable bytes under an /ipfs/ path.
+_IPFS_GATEWAYS = (
+    "ipfs.io",
+    "dweb.link",
+    "cloudflare-ipfs.com",
+    "w3s.link",
+    "gateway.pinata.cloud",
+    "nftstorage.link",
+)
+_DEFAULT_GATEWAY = "https://ipfs.io/ipfs/"
 
 
 def _is_safe_url(url: str) -> bool:
-    """True only for plain http(s) URLs whose host is a public name or address.
-    Rejects other schemes, embedded credentials, IPv6 literals, loopback,
-    private, link-local and metadata addresses in any numeric encoding."""
-    if "\\" in url or any(ord(c) < 33 or ord(c) > 126 for c in url):
+    """True only for immutable IPFS evidence: ipfs://<CID>[/path] or
+    https://<trusted gateway>/ipfs/<CID>[/path]. Mutable http(s) URLs are rejected."""
+    if "\\" in url or len(url) > 300 or any(ord(c) < 33 or ord(c) > 126 for c in url):
         return False
-    low = url.lower()
-    if not (low.startswith("https://") or low.startswith("http://")):
-        return False
-    try:
-        parts = urlsplit(url)
-        if parts.username is not None or parts.password is not None:
-            return False
-    except ValueError:
-        return False
-    hostname = _hostname(url).rstrip(".")
-    if hostname == "" or ":" in hostname:
-        return False
-    if _is_numeric_host(hostname):
-        ip = _int_from_ip(hostname)
-        return ip is not None and not _ip_is_blocked(ip)
-    for suffix in _REBIND_SUFFIXES:
-        if hostname == suffix or hostname.endswith("." + suffix):
-            return False
-    if _leading_ipv4_label(hostname):
-        return False
-    for blocked in _BLOCKED_EXACT:
-        if hostname == blocked or hostname.endswith("." + blocked):
-            return False
-    for suffix in _BLOCKED_SUFFIXES:
-        if hostname == suffix or hostname.endswith("." + suffix):
-            return False
-    return "." in hostname
+    if _IPFS_URI.match(url):
+        return True
+    m = _GATEWAY_URL.match(url)
+    return m is not None and m.group(1) in _IPFS_GATEWAYS
+
+
+def _gateway_url(url: str) -> str:
+    """Resolve ipfs://<CID>/path to a fetchable gateway URL; gateway URLs pass through."""
+    if url.startswith("ipfs://"):
+        return _DEFAULT_GATEWAY + url[len("ipfs://") :]
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -673,7 +565,7 @@ def _fetch_source(url: str) -> dict:
     if not _is_safe_url(url):
         return {"url": url, "ok": False, "note": "blocked", "text": ""}
     try:
-        res = gl.nondet.web.get(url)
+        res = gl.nondet.web.get(_gateway_url(url))
     except Exception:
         return {"url": url, "ok": False, "note": "unreachable", "text": ""}
     status = getattr(res, "status", None)
